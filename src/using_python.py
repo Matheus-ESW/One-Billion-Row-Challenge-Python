@@ -1,57 +1,131 @@
+from __future__ import annotations
 from csv import reader
 from collections import defaultdict, Counter
-from tqdm import tqdm  # barra de progresso
+from tqdm import tqdm
+from pathlib import Path
+import logging
 import time
+from typing import Dict, Tuple, Union
 
-NUMERO_DE_LINHAS = 1_000_000_000
+# CONFIGURAÇÃO DE LOG E CONSTANTES
 
-def processar_temperaturas(path_do_csv):
-    # utilizando infinito positivo e negativo para comparar
-    minimas = defaultdict(lambda: float('inf'))
-    maximas = defaultdict(lambda: float('-inf'))
-    somas = defaultdict(float)
-    medicoes = Counter()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
-    with open(path_do_csv, 'r') as file:
-        _reader = reader(file, delimiter=';')
-        # usando tqdm diretamente no iterador, isso mostrará a porcentagem de conclusão.
-        for row in tqdm(_reader, total=NUMERO_DE_LINHAS, desc="Processando"):
-            nome_da_station, temperatura = str(row[0]), float(row[1])
-            medicoes.update([nome_da_station])
-            minimas[nome_da_station] = min(minimas[nome_da_station], temperatura)
-            maximas[nome_da_station] = max(maximas[nome_da_station], temperatura)
-            somas[nome_da_station] += temperatura
+NUMERO_DE_LINHAS: int = 100_000_000
 
-    print("Dados carregados. Calculando estatísticas...")
+# CLASSE PRINCIPAL
 
-    # calculando min, média e max para cada estação
-    results = {}
-    for station, qtd_medicoes in medicoes.items():
-        mean_temp = somas[station] / qtd_medicoes
-        results[station] = (minimas[station], mean_temp, maximas[station])
+class TemperatureProcessor:
+    """
+    Classe responsável por processar grandes volumes de dados de temperatura
+    e calcular as estatísticas mínimas, médias e máximas para cada estação.
 
-    print("Estatística calculada. Ordenando...")
-    # ordenando os resultados pelo nome da estação
-    sorted_results = dict(sorted(results.items()))
+    Attributes:
+        path (Path): Caminho para o arquivo de dados.
+    """
 
-    # formatando os resultados para exibição
-    formatted_results = {station: f"{min_temp:.1f}/{mean_temp:.1f}/{max_temp:.1f}"
-                         for station, (min_temp, mean_temp, max_temp) in sorted_results.items()}
+    def __init__(self, path: Union[str, Path]) -> None:
+        if not isinstance(path, (str, Path)):
+            raise TypeError("O caminho do arquivo deve ser do tipo str ou Path.")
+        self.path = Path(path)
 
-    return formatted_results
+        if not self.path.exists():
+            raise FileNotFoundError(f"Arquivo não encontrado: {self.path}")
 
+        self.minimas = defaultdict(lambda: float("inf"))
+        self.maximas = defaultdict(lambda: float("-inf"))
+        self.somas = defaultdict(float)
+        self.medicoes = Counter()
+
+    # MÉTODO PRINCIPAL
+
+    def processar(self) -> Dict[str, str]:
+        """
+        Lê o arquivo de medições, calcula as estatísticas e retorna os resultados formatados.
+        Returns:
+            Dict[str, str]: Dicionário com a estação e suas métricas formatadas (min/média/max).
+        """
+        logging.info(f"Iniciando processamento do arquivo: {self.path}")
+
+        try:
+            with open(self.path, "r", encoding="utf-8") as file:
+                csv_reader = reader(file, delimiter=';')
+                for row in tqdm(csv_reader, total=NUMERO_DE_LINHAS, desc="Processando linhas"):
+                    try:
+                        nome_station, temperatura = self._parse_row(row)
+                        self._atualizar_estatisticas(nome_station, temperatura)
+                    except (ValueError, IndexError) as e:
+                        logging.warning(f"Linha ignorada (inválida): {row} -> {e}")
+                        continue
+        except Exception as e:
+            logging.error(f"Erro ao processar o arquivo: {e}")
+            raise
+
+        return self._gerar_resultados()
+
+    # MÉTODOS AUXILIARES
+
+    def _parse_row(self, row: list[str]) -> Tuple[str, float]:
+        """
+        Faz a validação e conversão dos dados de uma linha do CSV.
+        """
+        if len(row) < 2:
+            raise IndexError("Linha incompleta, esperado 2 colunas.")
+        nome_station = str(row[0]).strip()
+        temperatura = float(row[1])
+        return nome_station, temperatura
+
+    def _atualizar_estatisticas(self, nome: str, temperatura: float) -> None:
+        """
+        Atualiza os valores mínimos, máximos, soma e contador de medições por estação.
+        """
+        self.medicoes.update([nome])
+        self.minimas[nome] = min(self.minimas[nome], temperatura)
+        self.maximas[nome] = max(self.maximas[nome], temperatura)
+        self.somas[nome] += temperatura
+
+    def _gerar_resultados(self) -> Dict[str, str]:
+        """
+        Calcula média, organiza e formata os resultados para exibição.
+        """
+        logging.info("Calculando estatísticas e ordenando resultados...")
+
+        resultados = {}
+        for station, qtd_medicoes in self.medicoes.items():
+            if qtd_medicoes == 0:
+                continue
+            mean_temp = self.somas[station] / qtd_medicoes
+            resultados[station] = (
+                self.minimas[station],
+                mean_temp,
+                self.maximas[station]
+            )
+
+        sorted_results = dict(sorted(resultados.items()))
+        return {
+            station: f"{min_t:.1f}/{mean_t:.1f}/{max_t:.1f}"
+            for station, (min_t, mean_t, max_t) in sorted_results.items()
+        }
+
+# BLOCO PRINCIPAL DE EXECUÇÃO
 
 if __name__ == "__main__":
-    path_do_csv = "data/measurements.txt"
+    path_do_txt = Path("data/measurements.txt")
 
-    print("Iniciando o processamento do arquivo.")
-    start_time = time.time()  # Tempo de início
+    logging.info("Iniciando o processamento do arquivo.")
+    start_time = time.time()
 
-    resultados = processar_temperaturas(path_do_csv)
+    try:
+        processor = TemperatureProcessor(path_do_txt)
+        resultados = processor.processar()
 
-    end_time = time.time()  # Tempo de término
+        for station, metrics in resultados.items():
+            print(f"{station}: {metrics}")
 
-    for station, metrics in resultados.items():
-        print(station, metrics, sep=': ')
-
-    print(f"\nProcessamento concluído em {end_time - start_time:.2f} segundos.")
+        logging.info(f"Processamento concluído em {time.time() - start_time:.2f} segundos.")
+    except Exception as e:
+        logging.exception(f"Falha crítica no processamento: {e}")
